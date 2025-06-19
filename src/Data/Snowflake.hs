@@ -26,7 +26,7 @@ import Data.Bits  ((.|.), (.&.), shift, Bits)
 import Control.Concurrent.MVar (MVar, newMVar, putMVar, takeMVar)
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Control.Monad (when)
-import Control.Concurrent (threadDelay)
+import Control.Concurrent (threadDelay, modifyMVar)
 
 {-|
 Configuration that specifies how much bits are used for each part of the id.
@@ -87,23 +87,21 @@ newSnowflakeGen conf@(SnowflakeConfig timeBits _ nodeBits) nodeIdRaw = do
 -- |Generates next id. The bread and butter. See module description for details.
 nextSnowflake :: SnowflakeGen -> IO Snowflake
 nextSnowflake (SnowflakeGen lastRef) = do
-  Snowflake lastTime lastCount node conf <- takeMVar lastRef
-  let SnowflakeConfig timeBits countBits _ = conf
-      getNextTime = do
-        time <- currentTimestampFixed timeBits
-        if (lastTime > time) then do
-          threadDelay $ fromInteger $ (lastTime - time) * 1000
-          getNextTime
-        else 
-          return time
-      loop = do
-        timestamp <- getNextTime
-        let count = if timestamp == lastTime then lastCount + 1 else 0
-        if ((count `shift` (-1 * countBits)) /= 0) then 
-          loop
-        else 
-          return $ Snowflake timestamp count node conf
-  new <- loop          
-  putMVar lastRef new
-  return new
-  
+    modifyMVar lastRef $ \(Snowflake lastTime lastCount node conf) -> do
+        let SnowflakeConfig timeBits countBits _ = conf
+            getNextTime = do
+                time <- currentTimestampFixed timeBits
+                if lastTime > time then do
+                    threadDelay $ fromInteger $ (lastTime - time) * 1000
+                    getNextTime
+                else do
+                    return time
+            loop = do
+                timestamp <- getNextTime
+                let count = if timestamp == lastTime then lastCount + 1 else 0
+                if (count `shift` (-1 * countBits)) /= 0 then do
+                    loop
+                else do
+                    return $ Snowflake timestamp count node conf
+        new <- loop
+        return (new, new)  -- (new MVar state, return value)
