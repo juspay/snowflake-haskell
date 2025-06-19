@@ -26,7 +26,8 @@ import Data.Bits  ((.|.), (.&.), shift, Bits)
 import Control.Concurrent.MVar (MVar, newMVar, putMVar, takeMVar)
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Control.Monad (when)
-import Control.Concurrent (threadDelay)
+import Control.Concurrent (threadDelay, modifyMVar_, readMVar)
+import GHC.Conc (forkIO)
 
 {-|
 Configuration that specifies how much bits are used for each part of the id.
@@ -87,23 +88,42 @@ newSnowflakeGen conf@(SnowflakeConfig timeBits _ nodeBits) nodeIdRaw = do
 -- |Generates next id. The bread and butter. See module description for details.
 nextSnowflake :: SnowflakeGen -> IO Snowflake
 nextSnowflake (SnowflakeGen lastRef) = do
+  putStrLn "started generating snowflake stuff"  
   Snowflake lastTime lastCount node conf <- takeMVar lastRef
+  putStrLn "finished taking MVAR"
   let SnowflakeConfig timeBits countBits _ = conf
       getNextTime = do
+        putStrLn "starting getNextTime"
         time <- currentTimestampFixed timeBits
         if (lastTime > time) then do
           threadDelay $ fromInteger $ (lastTime - time) * 1000
+          putStrLn "looping getNextTime"
           getNextTime
-        else 
+        else do
+          putStrLn "finished getNextTime"
           return time
       loop = do
+        putStrLn "starting loop"
         timestamp <- getNextTime
         let count = if timestamp == lastTime then lastCount + 1 else 0
-        if ((count `shift` (-1 * countBits)) /= 0) then 
+        if ((count `shift` (-1 * countBits)) /= 0) then do
+          putStrLn "again loop"
           loop
-        else 
+        else do
+          putStrLn "finished loop"
           return $ Snowflake timestamp count node conf
-  new <- loop          
+  new <- loop  
+  putStrLn "finished generating snowflake stuff"  
   putMVar lastRef new
+  putStrLn "finished putting MVAR back"  
   return new
   
+testFn :: Integer -> IO (MVar [String])
+testFn num = do
+    output <- newMVar []
+    snowflakeGenerator <- newSnowflakeGen (SnowflakeConfig 32 16 8) 99999
+    mapM_ (\i -> forkIO (do
+        id <- snowflakeToInteger <$> nextSnowflake snowflakeGenerator 
+        modifyMVar_ output (\ids -> return (ids ++ ["\n| Snowflake ID for " ++ show i ++ " :" ++ show id ++ "\n"]))
+        )) [1..num]
+    pure output
